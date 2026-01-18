@@ -67,7 +67,7 @@ VOICE_CONFIGS = [
         "id": "longyingmu",
         "file": "longyingmu_woman.wav",
         "prompt_text": "You are a helpful assistant.<|endofprompt|>您好，我是智能电话助手，很高兴为您服务。请问您需要咨询业务预约办理还是查询信息？"
-    }
+    },
     {
         "id": "longshu",
         "file": "longshu.wav",
