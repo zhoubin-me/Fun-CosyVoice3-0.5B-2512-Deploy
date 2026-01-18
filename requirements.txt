@@ -15,7 +15,7 @@
 # nvidia-cudnn-cu12==8.9.7.29
 numpy<2
 modelscope
-transformers==4.51.3
+transformers
 x-transformers
 fastapi
 uvicorn
