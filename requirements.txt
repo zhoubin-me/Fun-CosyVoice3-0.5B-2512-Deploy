@@ -12,7 +12,7 @@
 # pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # ===== 核心依赖 =====
-nvidia-cudnn-cu12==8.9.7.29
+# nvidia-cudnn-cu12==8.9.7.29
 numpy<2
 modelscope
 transformers==4.51.3
