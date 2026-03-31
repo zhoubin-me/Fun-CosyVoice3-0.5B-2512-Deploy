@@ -71,6 +71,11 @@ VOICE_CONFIGS = [
         "prompt_text": "You are a helpful assistant.<|endofprompt|>您好，我是智能电话助手，很高兴为您服务。请问您需要咨询业务预约办理还是查询信息？"
     },
     {
+        "id": "longshu",
+        "file": "longshu.wav",
+        "prompt_text": "You are a helpful assistant.<|endofprompt|>Technology has made it easier to learn new languages。通过apps和online courses，anyone can start learning中文或者其他语言"
+    },
+    {
         "id": "cross_lingual_en",
         "file": "cross_lingual_prompt.wav",
         "prompt_text": "You are a helpful assistant.<|endofprompt|>And then later on, fully acquiring that company. So keeping management in line, interest in line with the asset that's coming into the family is a reason why sometimes we don't buy the whole thing."
