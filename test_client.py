@@ -92,11 +92,80 @@ def test_tts_stream(base_url: str, text: str, output_path: str):
         return False
 
 
+def test_openai_speech(base_url: str, text: str, output_path: str, voice: str, stream: bool):
+    """测试 OpenAI 兼容的语音接口"""
+    print("\n[2] OpenAI Compatible Speech 测试")
+    print(f"  文本: {text}")
+    print(f"  音色: {voice}")
+    print(f"  流式: {'是' if stream else '否'}")
+
+    start_time = time.time()
+
+    if stream:
+        if not output_path.endswith(".pcm"):
+            output_path += ".pcm"
+    else:
+        if not output_path.endswith(".wav"):
+            output_path += ".wav"
+
+    try:
+        resp = requests.post(
+            f"{base_url}/v1/audio/speech",
+            json={
+                "model": "cosyvoice-tts",
+                "input": text,
+                "voice": voice,
+                "response_format": "pcm" if stream else "wav",
+                "stream": stream
+            },
+            stream=stream,
+            timeout=60
+        )
+
+        if resp.status_code != 200:
+            print(f"  ✗ 请求失败: {resp.status_code} - {resp.text}")
+            return False
+
+        total_bytes = 0
+        first_chunk_time = None
+        with open(output_path, "wb") as f:
+            if stream:
+                for chunk in resp.iter_content(chunk_size=4800):
+                    if chunk:
+                        if first_chunk_time is None:
+                            first_chunk_time = time.time() - start_time
+                            print(f"  ⚡ 首帧延迟: {first_chunk_time * 1000:.0f}ms")
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+            else:
+                f.write(resp.content)
+                total_bytes = len(resp.content)
+
+        total_time = time.time() - start_time
+        print(f"  ✓ 接收完成")
+        print(f"  ✓ 数据量: {total_bytes / 1024:.1f}KB")
+        print(f"  ✓ 总耗时: {total_time:.2f}s")
+        print(f"  ✓ 音频已保存: {output_path}")
+        return True
+    except Exception as e:
+        print(f"  ✗ 请求异常: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="CosyVoice TTS 客户端测试")
     parser.add_argument("--url", type=str, default="http://localhost:10096", help="服务地址")
     parser.add_argument("--text", type=str, default="你好，我是小智，很高兴为您服务。", help="测试文本")
     parser.add_argument("--output", type=str, default="output/client_test.wav", help="输出文件 (.wav)")
+    parser.add_argument("--voice", type=str, default="default", help="音色 ID")
+    parser.add_argument(
+        "--api",
+        type=str,
+        default="openai",
+        choices=["openai", "legacy"],
+        help="测试接口类型: openai 或 legacy"
+    )
+    parser.add_argument("--stream", action="store_true", help="OpenAI 接口使用流式 PCM 输出")
     args = parser.parse_args()
     
     print("=" * 60)
@@ -114,8 +183,11 @@ def main():
         print("\n服务不可用，请先启动服务: ./start_server.sh")
         return
     
-    # 测试流式 TTS
-    test_tts_stream(args.url, args.text, args.output)
+    # 测试 TTS
+    if args.api == "openai":
+        test_openai_speech(args.url, args.text, args.output, args.voice, args.stream)
+    else:
+        test_tts_stream(args.url, args.text, args.output)
     
     print("\n" + "=" * 60)
     print("测试完成！")

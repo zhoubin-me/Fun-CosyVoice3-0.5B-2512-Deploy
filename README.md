@@ -1,6 +1,6 @@
 # Fun-CosyVoice3-0.5B-2512 Linux 部署指南
 
-本项目提供 Fun-CosyVoice3-0.5B-2512 语音合成服务的简化部署方案，以及快速测试和部署提供应用调用。
+本项目提供 Fun-CosyVoice3-0.5B-2512 语音合成服务的简化部署方案，并已适配 OpenAI Compatible API，方便直接对接标准 SDK 或现有调用链路。
 
 ## 功能特性
 
@@ -10,6 +10,7 @@
 |------|------|
 | **vLLM 加速** | 可选启用，推理速度提升 40%+，首帧延迟显著降低 |
 | **流式音频输出** | TTS 边生成边返回 PCM 数据，支持实时播放 |
+| **OpenAI Compatible API** | 支持 `POST /v1/audio/speech`，兼容常见 OpenAI TTS 客户端调用方式 |
 | **可配置采样率** | 支持 16kHz（兼容小智平台）和 24kHz（原生高质量）两种输出 |
 | **多音色预加载** | 支持配置多个音色，启动时预缓存特征，运行时零延迟切换 |
 | **Zero-Shot 声音复刻** | 只需 5-15 秒参考音频即可克隆任意音色 |
@@ -109,12 +110,24 @@ conda activate cosyvoice
 # 健康检查
 curl http://localhost:10096/health
 
-# 测试 TTS
+# 测试 OpenAI Compatible TTS
 python test_client.py --text "你好，我是小智"
 
 # 或使用 curl
 curl -X POST -F "text=你好" http://localhost:10096/tts/stream -o test.pcm
 ffplay -f s16le -ar 24000 -ac 1 test.pcm
+
+# OpenAI Compatible API
+curl http://localhost:10096/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"cosyvoice-tts","input":"你好，我是小智","voice":"default","response_format":"wav"}' \
+  --output speech.wav
+
+# OpenAI Compatible Streaming API (PCM)
+curl http://localhost:10096/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"cosyvoice-tts","input":"你好，我是小智","response_format":"pcm","stream":true}' \
+  --output speech.pcm
 ```
 
 ## API 接口
@@ -139,6 +152,44 @@ Content-Type: multipart/form-data
 
 响应: PCM 16bit, Mono (采样率由 --output_sample_rate 控制，默认 16kHz)
 ```
+
+### OpenAI Compatible Speech
+
+```
+POST /v1/audio/speech
+Content-Type: application/json
+
+请求体:
+{
+  "model": "cosyvoice-tts",
+  "input": "你好，我是小智",
+  "voice": "default",
+  "response_format": "wav"
+}
+
+参数:
+- model (必需): 固定为 `cosyvoice-tts`
+- input (必需): 要合成的文本
+- voice (可选): 对应服务端的 voice_id，不传时使用默认音色
+- response_format (可选): `wav` 或 `pcm`
+- speed (可选): 兼容字段，当前版本暂未生效
+- stream (可选): `true` 时启用分块流式输出，仅支持 `response_format="pcm"`
+
+响应:
+- `wav`: 标准 WAV 音频文件
+- `pcm`: 原始 PCM 16bit Mono 音频流
+- `stream=true`: 通过 HTTP chunked transfer 持续返回 PCM 数据
+```
+
+### OpenAI Compatible Models
+
+```
+GET /v1/models
+GET /v1/models/{model_id}
+```
+
+当前可用模型:
+- `cosyvoice-tts`
 
 ### Zero-shot 克隆
 
@@ -188,6 +239,48 @@ CosyVoice3 模型原生输出 **24kHz** 音频，但小智平台使用 **16kHz**
 > GPU 重采样效率极高 (使用 `torchaudio.functional.resample`)，同时减少 33% 网络传输数据量。
 
 ## 性能优化亮点
+
+## OpenAI SDK 调用示例
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="dummy",
+    base_url="http://localhost:10096/v1",
+)
+
+audio = client.audio.speech.create(
+    model="cosyvoice-tts",
+    voice="default",
+    input="你好，我是小智，很高兴为您服务。",
+    response_format="wav",
+)
+
+audio.stream_to_file("speech.wav")
+```
+
+流式 PCM 示例:
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:10096/v1/audio/speech",
+    json={
+        "model": "cosyvoice-tts",
+        "input": "你好，我是小智，很高兴为您服务。",
+        "response_format": "pcm",
+        "stream": True,
+    },
+    stream=True,
+)
+
+with open("speech.pcm", "wb") as f:
+    for chunk in resp.iter_content(chunk_size=4800):
+        if chunk:
+            f.write(chunk)
+```
 
 通过针对性的深度优化，本项目在消费级显卡上实现了极致的推理性能：
 

@@ -16,10 +16,12 @@ import os
 import sys
 print(f"DEBUG SYSTARGV: {sys.argv}")
 import argparse
+import io
 import logging
 import time
 import numpy as np
-from typing import Optional, Generator
+import wave
+from typing import Optional, Generator, Iterable, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import torch
@@ -33,6 +35,7 @@ sys.path.insert(0, os.path.join(SCRIPT_DIR, 'third_party', 'Matcha-TTS'))
 from fastapi import FastAPI, Form, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 import uvicorn
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -48,20 +51,19 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 VOICE_CONFIGS = [
     {
-        "id": "default",  # 默认音色
-        "file": "zero_shot_prompt.wav",  # asset/zero_shot_prompt.wav
+        "id": "default",
+        "file": "zero_shot_prompt.wav",
         "prompt_text": "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。"
     },
-    # 添加更多音色示例 (取消注释并修改):
     {
         "id": "longyingcheng",
         "file": "longyingcheng_man.wav",
         "prompt_text": "You are a helpful assistant.<|endofprompt|>真不好意思，从小至今，他还从来没有被哪一位异性朋友亲吻过呢。"
     },
     {
-         "id": "longyingwan",
-         "file": "longyingwan_woman.wav", 
-         "prompt_text": "You are a helpful assistant.<|endofprompt|>我们将为全球城市的可持续发展贡献力量。"
+        "id": "longyingwan",
+        "file": "longyingwan_woman.wav",
+        "prompt_text": "You are a helpful assistant.<|endofprompt|>我们将为全球城市的可持续发展贡献力量。"
     },
     {
         "id": "longyingmu",
@@ -72,6 +74,11 @@ VOICE_CONFIGS = [
         "id": "longshu",
         "file": "longshu.wav",
         "prompt_text": "You are a helpful assistant.<|endofprompt|>Technology has made it easier to learn new languages。通过apps和online courses，anyone can start learning中文或者其他语言。"
+    },
+    {
+        "id": "cross_lingual_en",
+        "file": "cross_lingual_prompt.wav",
+        "prompt_text": "You are a helpful assistant.<|endofprompt|>And then later on, fully acquiring that company. So keeping management in line, interest in line with the asset that's coming into the family is a reason why sometimes we don't buy the whole thing."
     }
 ]
 # ============================================================================
@@ -82,7 +89,7 @@ inference_lock = threading.Lock()
 
 # 多音色缓存: {voice_id: {"file": path, "prompt_text": text}}
 voice_cache = {}
-default_voice_id = "default"  # 默认使用的音色ID
+default_voice_id = "cross_lingual_en"  # 默认使用的音色ID
 
 # 输出采样率 (可通过 --output_sample_rate 配置)
 # 默认 16000 以兼容小智平台
@@ -104,6 +111,89 @@ app.add_middleware(
 
 
 
+
+
+class OpenAISpeechRequest(BaseModel):
+    model: str = Field(default="cosyvoice-tts")
+    input: str = Field(..., description="The text to generate audio for")
+    voice: Optional[str] = Field(default=None, description="Voice ID mapped to CosyVoice voice_id")
+    response_format: str = Field(default="wav", description="wav or pcm")
+    speed: float = Field(default=1.0, description="Reserved for compatibility; currently ignored")
+    stream: bool = Field(default=False, description="When true, stream PCM audio chunks")
+
+
+def pcm_chunks_to_wav_bytes(chunks: Iterable[bytes], sample_rate: int) -> bytes:
+    """Wrap PCM16 mono chunks into a WAV container."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        for chunk in chunks:
+            wav_file.writeframes(chunk)
+    return buffer.getvalue()
+
+
+def create_openai_audio_response(audio_chunks: Iterable[bytes], response_format: str, sample_rate: int):
+    response_format = (response_format or "wav").lower()
+    if response_format == "wav":
+        audio_bytes = pcm_chunks_to_wav_bytes(audio_chunks, sample_rate)
+        media_type = "audio/wav"
+        filename = "speech.wav"
+    elif response_format == "pcm":
+        audio_bytes = b"".join(audio_chunks)
+        media_type = "application/octet-stream"
+        filename = "speech.pcm"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported response_format '{response_format}'. Supported values: wav, pcm"
+        )
+
+    return StreamingResponse(
+        iter([audio_bytes]),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Sample-Rate": str(sample_rate),
+            "X-Channels": "1",
+            "X-Bits": "16"
+        }
+    )
+
+
+def create_openai_streaming_response(audio_chunks: Iterable[bytes], response_format: str, sample_rate: int):
+    response_format = (response_format or "pcm").lower()
+    if response_format != "pcm":
+        raise HTTPException(
+            status_code=400,
+            detail="Streaming is only supported with response_format='pcm'"
+        )
+    return StreamingResponse(
+        audio_chunks,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="speech.pcm"',
+            "X-Sample-Rate": str(sample_rate),
+            "X-Channels": "1",
+            "X-Bits": "16",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+def resolve_voice_request(voice_id: Optional[str]) -> Optional[str]:
+    """Map OpenAI-compatible voice input to an existing CosyVoice voice ID."""
+    if not voice_id:
+        return default_voice_id
+    if voice_id in voice_cache:
+        return voice_id
+    if voice_id == "alloy" and default_voice_id in voice_cache:
+        return default_voice_id
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unknown voice '{voice_id}'. Available voices: {sorted(voice_cache.keys())}"
+    )
 
 
 def generate_audio_stream(
@@ -201,6 +291,7 @@ async def health_check():
     return JSONResponse({
         "status": "ok",
         "model": "Fun-CosyVoice3-0.5B-2512",
+        "openai_compatible_model": "cosyvoice-tts",
         "model_sample_rate": cosyvoice.sample_rate if cosyvoice else None,
         "output_sample_rate": output_sample_rate,
         "available_voices": list(voice_cache.keys()),
@@ -272,6 +363,112 @@ async def tts_stream(
     )
 
 
+@app.get("/v1/models")
+async def list_models():
+    created_at = int(time.time())
+    return JSONResponse({
+        "object": "list",
+        "data": [
+            {
+                "id": "cosyvoice-tts",
+                "object": "model",
+                "created": created_at,
+                "owned_by": "local"
+            }
+        ]
+    })
+
+
+@app.get("/v1/models/{model_id}")
+async def retrieve_model(model_id: str):
+    if model_id != "cosyvoice-tts":
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+    return JSONResponse({
+        "id": "cosyvoice-tts",
+        "object": "model",
+        "created": int(time.time()),
+        "owned_by": "local"
+    })
+
+
+@app.post("/v1/audio/speech")
+async def openai_audio_speech(request: OpenAISpeechRequest):
+    """
+    OpenAI-compatible speech API.
+
+    Example body:
+    {
+        "model": "cosyvoice-tts",
+        "input": "你好，我是小智",
+        "voice": "default",
+        "response_format": "wav"
+    }
+    """
+    if request.model != "cosyvoice-tts":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model '{request.model}'. Use 'cosyvoice-tts'."
+        )
+    if not request.input or len(request.input.strip()) == 0:
+        raise HTTPException(status_code=400, detail="input cannot be empty")
+    if request.speed <= 0:
+        raise HTTPException(status_code=400, detail="speed must be greater than 0")
+
+    voice_id = resolve_voice_request(request.voice)
+    logger.info(
+        "OpenAI speech request: model='%s', voice='%s', format='%s', stream=%s, text='%s...'",
+        request.model,
+        voice_id,
+        request.response_format,
+        request.stream,
+        request.input[:50]
+    )
+
+    start_time = time.time()
+    if request.stream:
+        def streaming_generator():
+            first_chunk = True
+            chunk_count = 0
+            total_bytes = 0
+            for chunk in generate_audio_stream(
+                request.input,
+                voice_id=voice_id,
+                stream=True
+            ):
+                if first_chunk:
+                    logger.info("⚡ OpenAI stream first chunk: %.0fms", (time.time() - start_time) * 1000)
+                    first_chunk = False
+                chunk_count += 1
+                total_bytes += len(chunk)
+                yield chunk
+            logger.info(
+                "✅ OpenAI speech stream complete: total time %.0fms, chunks %d, bytes %.1fKB",
+                (time.time() - start_time) * 1000,
+                chunk_count,
+                total_bytes / 1024
+            )
+
+        return create_openai_streaming_response(
+            streaming_generator(),
+            request.response_format,
+            output_sample_rate
+        )
+
+    audio_chunks = list(
+        generate_audio_stream(
+            request.input,
+            voice_id=voice_id,
+            stream=True
+        )
+    )
+    logger.info(
+        "✅ OpenAI speech complete: total time %.0fms, chunks %d",
+        (time.time() - start_time) * 1000,
+        len(audio_chunks)
+    )
+    return create_openai_audio_response(audio_chunks, request.response_format, output_sample_rate)
+
+
 @app.post("/tts/zero_shot")
 async def tts_zero_shot(
     text: str = Form(..., description="要合成的文本"),
@@ -297,14 +494,19 @@ async def tts_zero_shot(
     logger.info(f"Zero-shot TTS: text='{text[:50]}...', prompt='{prompt_text[:30]}...'")
     
     def stream_generator():
-        for chunk in generate_audio_stream(text, prompt_text, prompt_wav_data, stream=True):
+        for chunk in generate_audio_stream(
+            text,
+            prompt_text=prompt_text,
+            prompt_wav=prompt_wav_data,
+            stream=True
+        ):
             yield chunk
     
     return StreamingResponse(
         stream_generator(),
         media_type="application/octet-stream",
         headers={
-            "X-Sample-Rate": str(cosyvoice.sample_rate),
+            "X-Sample-Rate": str(output_sample_rate),
             "X-Channels": "1",
             "X-Bits": "16"
         }
