@@ -81,6 +81,7 @@ VOICE_CONFIGS = [
         "prompt_text": "You are a helpful assistant.<|endofprompt|>And then later on, fully acquiring that company. So keeping management in line, interest in line with the asset that's coming into the family is a reason why sometimes we don't buy the whole thing."
     }
 ]
+VOICE_IDS = [voice["id"] for voice in VOICE_CONFIGS]
 # ============================================================================
 
 # 全局变量
@@ -622,7 +623,7 @@ def warmup_model(prompt_wav_path: str = None, voice_id: str = None):
 
 
 def main():
-    global output_sample_rate
+    global output_sample_rate, default_voice_id
 
     parser = argparse.ArgumentParser(description="CosyVoice TTS Server")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址")
@@ -637,6 +638,13 @@ def main():
     parser.add_argument("--fp16", action="store_true", help="使用 FP16 推理 (节省显存)")
     parser.add_argument("--use_vllm", action="store_true", help="[优化] 使用 vLLM 加速推理 (需 pip install vllm)")
     parser.add_argument(
+        "--default_voice_id",
+        type=str,
+        default=default_voice_id,
+        choices=VOICE_IDS,
+        help="默认音色 ID"
+    )
+    parser.add_argument(
         "--output_sample_rate",
         type=int,
         default=16000,
@@ -647,6 +655,7 @@ def main():
 
     # 设置输出采样率
     output_sample_rate = args.output_sample_rate
+    default_voice_id = args.default_voice_id
 
     # 处理相对路径
     if not os.path.isabs(args.model_dir):
@@ -659,6 +668,7 @@ def main():
     logger.info(f"服务已启动: http://{args.host}:{args.port}")
     logger.info(f"健康检查: http://{args.host}:{args.port}/health")
     logger.info(f"TTS 接口: POST http://{args.host}:{args.port}/tts/stream")
+    logger.info(f"🎤 默认音色: {default_voice_id}")
     logger.info(f"📢 输出采样率: {output_sample_rate}Hz (模型原生: 24000Hz)")
 
     uvicorn.run(app, host=args.host, port=args.port)

@@ -100,6 +100,9 @@ python download_model.py
 ```bash
 conda activate cosyvoice
 ./start_server.sh
+
+# 指定默认音色
+python cosyvoice_server.py --default_voice_id cross_lingual_en
 ```
 
 服务监听 `0.0.0.0:10096` 端口。
@@ -233,6 +236,9 @@ CosyVoice3 模型原生输出 **24kHz** 音频，但小智平台使用 **16kHz**
 
 # 原生高质量 24kHz (用于其他场景)
 ./start_server.sh --use_vllm --output_sample_rate 24000
+
+# 从 VOICE_CONFIGS 里选择默认音色
+./start_server.sh --default_voice_id longyingmu
 ```
 
 > [!TIP]
